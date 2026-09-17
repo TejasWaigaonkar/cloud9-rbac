@@ -192,11 +192,13 @@ CI runs on PRs and pushes to main/develop, installs pinned dependencies, checks 
 Django checks, missing migrations, fresh PostgreSQL migrations, the full test suite, schema validation,
 and a Docker image build. Coverage/schema are retained as workflow artifacts.
 
-The separate manually triggered deployment workflow requires main, a successful CI run for the
-exact commit, and the GitHub `production` environment. It publishes a commit-tagged GHCR image and
-deploys to a provisioned Docker host over verified SSH. Configure required reviewers on the environment.
-The complete Django application is deployed together. See [DEPLOYMENT.md](docs/DEPLOYMENT.md)
-for exact provisioning, secrets, TLS, backup, migration, health verification and rollback steps.
+The separate manually triggered deployment workflow runs only from the `main` branch and requires a successful CI run for the exact commit. The deployment workflow uses a secure Render Deploy Hook stored as a GitHub Actions secret (`RENDER_DEPLOY_HOOK`) to trigger the production deployment.
+
+After triggering the deployment, GitHub Actions waits for the Render service to start and verifies the production `/health/` endpoint. The application is deployed as a Docker-based Render Web Service and uses Render PostgreSQL as the production database.
+
+### Rollback
+
+If a production deployment causes an issue, open the Render dashboard and select the `cloud9-rbac` Web Service. Use the deployment history to redeploy a previously working deployment. Alternatively, revert the problematic Git commit, push the corrected state to `main`, allow CI to complete successfully, and run the `Deploy complete application` GitHub Actions workflow again. After rollback, verify `/health/` and `/ready/` before considering the application restored.
 
 ## Dependencies and maintenance
 
