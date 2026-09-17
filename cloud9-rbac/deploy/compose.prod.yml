@@ -1,0 +1,12 @@
+services:
+  web:
+    image: ${APP_IMAGE:?Set immutable APP_IMAGE}
+    env_file: /opt/cloud9/app.env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.prod
+    ports: ['127.0.0.1:8000:8000']
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ['/tmp']
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']

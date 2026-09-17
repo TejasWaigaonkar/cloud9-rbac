@@ -1,0 +1,14 @@
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+exclude = [".venv", "staticfiles", "pytest-cache-files-*"]
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+python_files = ["test_*.py"]
+testpaths = ["apps"]
+addopts = "--strict-markers --cov=apps --cov-report=term-missing --cov-report=xml"
+
+[tool.coverage.run]
+omit = ["*/tests/*", "*/migrations/*"]
