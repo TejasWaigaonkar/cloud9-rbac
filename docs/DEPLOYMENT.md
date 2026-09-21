@@ -1,98 +1,83 @@
-# Production deployment: Linux Docker host + managed PostgreSQL
+# Deployment guide
 
-This is a runnable deployment template, not an already deployed service. Provision an Ubuntu
-host with Docker Engine/Compose v2, HTTPS reverse proxy (Nginx/Caddy), and a managed PostgreSQL 17
-database reachable privately. Restrict inbound traffic to HTTPS and deployment SSH. RBAC and
-projects share the same container release and database. CI must pass before first deployment.
+The application includes an optional Render deployment workflow. Local development uses Docker Compose with Django and PostgreSQL.
 
-## One-time host provisioning
+## Target platform
 
-1. Create a dedicated deployment account with the required Docker permissions (Docker group access
-   is effectively host-root authority). Install its SSH public key. Keep its private key in GitHub.
-2. Create `/opt/cloud9`, owned by that account. Copy `deploy/compose.prod.yml` there as
-   `compose.prod.yml` and `deploy/deploy.sh` as `deploy.sh`; run `chmod 750 /opt/cloud9/deploy.sh`.
-3. Create `/opt/cloud9/app.env`, mode 600. Fill the production settings below using real secrets:
+- Render Web Service using the repository's Dockerfile.
+- Render PostgreSQL database.
+- Django, RBAC, and the projects application are deployed together.
 
-   ```dotenv
-   DJANGO_SETTINGS_MODULE=config.settings.prod
-   DJANGO_SECRET_KEY=<random-50-plus-character-secret>
-   DJANGO_ALLOWED_HOSTS=rbac.example.com,127.0.0.1
-   CSRF_TRUSTED_ORIGINS=https://rbac.example.com
-   TRUST_PROXY_PROTO=1
-   POSTGRES_DB=cloud9
-   POSTGRES_USER=cloud9
-   POSTGRES_PASSWORD=<database-secret>
-   POSTGRES_HOST=<private-managed-database-host>
-   POSTGRES_PORT=5432
-   PGSSLMODE=verify-full
-   PGSSLROOTCERT=/etc/ssl/certs/ca-certificates.crt
-   ```
+The files in `deploy/` provide an alternative self-managed Docker-host setup. They are not used by the current GitHub Actions workflow.
 
-   Use a CA bundle trusted for the database provider; mount a provider CA when required.
-   PGSSLMODE/PGSSLROOTCERT are libpq environment variables used by psycopg.
-4. Create `/opt/cloud9/host.env`, mode 600, with `APP_HOST=rbac.example.com` for the smoke check.
-5. Point a TLS reverse proxy to `127.0.0.1:8000`. Preserve Host and **overwrite**
-   `X-Forwarded-Proto` with the actual client protocol. Do not expose port 8000 publicly.
-   Configure HTTPS certificates, distributed login/API rate limits and Admin access controls.
-6. Configure host GHCR read access for a private image using a separate read-only package token:
-   `docker login ghcr.io`. The workflow's temporary publishing token is not persisted on the host.
-7. Enable managed database backups/PITR and verify a restore into staging. Keep a pre-release
-   snapshot before schema changes. Size connection limits for workers and scaling.
+## Render configuration
 
-## GitHub settings
+1. Create a Render PostgreSQL database.
+2. Create a Docker-based Render Web Service connected to this repository's `main` branch.
+3. Configure the application environment variables:
 
-Create a `production` environment with required reviewer approval. Configure environment secrets:
-
-| Secret | Value |
+| Variable | Value |
 | --- | --- |
-| DEPLOY_HOST | Provisioned host DNS/IP |
-| DEPLOY_USER | Dedicated SSH deployment account |
-| DEPLOY_SSH_KEY | Private key for that account |
-| DEPLOY_KNOWN_HOSTS | Host's SSH public host-key line, verified out of band |
+| DJANGO_SETTINGS_MODULE | config.settings.prod |
+| DJANGO_SECRET_KEY | A private, randomly generated secret of at least 50 characters |
+| DJANGO_ALLOWED_HOSTS | The service hostname, without https:// |
+| CSRF_TRUSTED_ORIGINS | The full HTTPS service URL |
+| TRUST_PROXY_PROTO | 1 when using Render's trusted HTTPS proxy |
+| POSTGRES_DB | Render database name |
+| POSTGRES_USER | Render database username |
+| POSTGRES_PASSWORD | Render database password |
+| POSTGRES_HOST | Render database internal hostname |
+| POSTGRES_PORT | 5432 |
 
-`GITHUB_TOKEN` is supplied by GitHub for GHCR push and CI-status lookup. Enable packages write
-permission for the deployment workflow. Do not use unverified `ssh-keyscan` during deployments.
-Application/database secrets remain on the host or in a secrets manager.
+Store values in Render's environment settings. Never commit passwords, secrets, or a populated `.env` file.
 
-## Release
+Ensure the startup command runs Django migrations before starting Gunicorn. Use `/health/` as the service health-check path.
 
-Merge a reviewed PR to main and wait for CI success. Manually run **Deploy complete application**
-on main and approve the protected environment. The workflow verifies successful CI for the exact
-commit, builds/pushes `ghcr.io/<owner>/<repo>:<commit-sha>`, and invokes the host script. The script:
+Disable automatic deploys if releases should happen only through the GitHub deployment workflow.
 
-1. Pulls the exact image tag.
-2. Runs production Django deployment checks, failing on warnings.
-3. Runs migrations once in a one-off container.
-4. Replaces the whole application and waits for its liveness check.
-5. Probes database readiness and records the deployed image.
+## GitHub configuration
 
-This single-host template can have brief downtime and does not promise zero-downtime rollout.
-Use backward-compatible expand/contract migrations because old workers may briefly coexist with
-the new schema. Never run destructive migrations without a reviewed maintenance/restore plan.
+1. Create a GitHub environment named `production`.
+2. Obtain the web service's Deploy Hook from Render.
+3. Add it as the GitHub Actions secret `RENDER_DEPLOY_HOOK`.
+4. Configure environment approval rules if required.
 
-Bootstrap the first superuser interactively after setting APP_IMAGE in the host shell:
+The deploy hook is a secret and must not be placed in source code or documentation.
 
-```sh
-cd /opt/cloud9
-export APP_IMAGE=ghcr.io/YOUR_OWNER/YOUR_REPOSITORY:YOUR_COMMIT_SHA
-docker compose -f compose.prod.yml run --rm web python manage.py createsuperuser
-```
+## Deployment workflow
 
-Check HTTPS `/health/`, `/ready/`, Admin login, and an authenticated allowed/denied projects
-request after deployment. Watch logs and error rates. Add uptime alerts, database/storage alerts,
-audit-log export and retention. Schedule `flushexpiredtokens` daily in the deployment environment
-to clean expired SimpleJWT blacklist data.
+1. Merge a reviewed pull request into `main`.
+2. Wait for CI to pass for that commit.
+3. Open GitHub Actions.
+4. Select **Deploy complete application**.
+5. Run the workflow on `main`.
+
+The workflow checks for successful CI, calls the Render deploy hook, waits, and checks the public `/health/` endpoint.
+
+If using a different Render service, update the health-check URL in `.github/workflows/deploy.yml`.
+
+A successful health response alone does not prove that the intended new revision is deployed. Confirm the deployed commit and deployment status in Render.
+
+## Verification
+
+After deployment, check:
+
+- `/health/` returns `{"status":"ok"}`.
+- `/ready/` returns `{"status":"ready"}`.
+- Authenticated API requests allow permitted operations and reject forbidden operations.
+
+Render uses a separate database from local Docker. Local accounts are not automatically copied to it.
 
 ## Rollback
 
-Record the previous immutable image tag before deployment. If the new application fails but
-schema changes are backward compatible, run `/opt/cloud9/deploy.sh <previous-image-tag>`.
-This does not reverse migrations: applied migrations remain recorded. For incompatible schema
-changes, restore the verified database backup and previous application in a maintenance window,
-or apply a reviewed forward fix. Do not blindly reverse migrations or automatically restore a
-production database. If migration/check steps fail, the script exits before replacing the service.
-If readiness fails after replacement, inspect logs and explicitly roll back using this procedure.
+Use Render's deployment history to roll back when supported, or revert the problematic Git commit through a pull request and redeploy after CI passes.
 
-Pin base images/action versions to organization-approved digests/commit SHAs for hardened supply
-chain policy. Refresh dependency pins and images regularly; do not treat an old verified build as
-permanently secure. Audit rows are application-read-only; export them off-host for tamper evidence.
+Application rollback does not automatically reverse database migrations. Use backward-compatible migrations and maintain database backups. Incompatible database changes need a reviewed recovery plan.
+
+After rollback, check `/health/`, `/ready/`, and authenticated API behavior.
+
+## Assignment submission
+
+Include the repository URL, successful CI-run link, architecture documentation, and API documentation/Postman collection.
+
+Include a deployment URL if submitting a deployed instance. Continuing to operate a live service is not necessary for demonstrating the local Docker setup and supplying the deployment workflow.
